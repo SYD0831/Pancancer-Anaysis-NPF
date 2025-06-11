@@ -1,0 +1,319 @@
+---
+title: "Figure 1"
+output: html_document
+date: "2025-04-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F,message = F)
+library(dplyr)
+library('org.Mm.eg.db')
+library('clusterProfiler')
+library(biomaRt)
+library(reactome.db)
+library(ReactomePA)
+library(tidyverse)
+library(data.table)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(enrichplot)
+library(ggplot2)    
+library(stringr)
+library(ggrepel)
+library(DESeq2)
+library(ComplexHeatmap)
+library(pheatmap)
+library(circlize)
+library(easyTCGA)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(gridExtra)
+library(future)
+plan("multicore", workers = 8)
+options(future.globals.maxSize = 20 * 1024^3)
+
+```
+
+## 1. DEG analysis between Tumor and normal data from TCGA and GTEx
+
+```{r}
+load("TCGA_GTEx_pancancer_mrna_pheno.rdata")
+```
+
+```{r}
+sample_count <- tcga_gtex_mrna_pheno %>%
+  group_by(project, sample_type) %>%
+  summarise(count = n(), .groups = 'drop')
+```
+
+```{r}
+run_deg_analysis <- function(data, project_name, output_dir) {
+  project_data <- data[data$project == project_name, ]
+  exp <- round(2^project_data[, -(1:4)] - 1)
+  exp <- as.matrix(exp)
+  rownames(exp) <- project_data$sample_id
+  exp <- t(exp)
+  
+  Group <- ifelse(project_data$sample_type == "TCGA_tumor", "tumor", "normal")
+  Group <- factor(Group, levels = c("normal", "tumor"))
+  group_table <- table(Group)
+  print(group_table) 
+  Batch <- ifelse(grepl("GTEx", project_data$sample_type), "GTEx", "TCGA")
+  Batch <- factor(Batch)
+  
+  if (nlevels(Group) > 1 && all(group_table > 0)) {
+    deg.count <- exp[apply(exp, 1, function(x) sum(x > 1) > 0), ] %>% as.matrix()
+    
+    info <- data.frame(row.names = colnames(deg.count),
+                       group = Group,
+                       batch = Batch,
+                       sample = colnames(deg.count))
+    info$group <- relevel(info$group, ref = "normal")
+    
+    dds1 <- DESeqDataSetFromMatrix(countData = deg.count, colData = info, design = ~ batch + group ) # ~ group
+    dds1 <- DESeq(dds1)
+    res1 <- results(dds1)
+    resOrdered1 <- res1[order(res1$log2FoldChange), ] %>% as.data.frame()
+    
+    resSig <- subset(resOrdered1, pvalue < 0.05)
+    
+    output_file <- file.path(output_dir, paste0("deg_sig_", project_name, ".csv"))
+    write.csv(resSig, output_file, row.names = TRUE)
+    
+    message("结果已保存至: ", output_file)
+  } else {
+    message("项目", project_name, "的样本只有一个组别或组内样本数不足，跳过分析")
+  }
+
+  rm(project_data, exp, Group, deg.count, dds1, res1, resOrdered1, resSig)
+  gc()
+}
+```
+
+```{r}
+projects <- unique(tcga_gtex_mrna_pheno$project)
+output_dir <- "../data/degressig"
+for (project_name in projects[21:33]) {
+  run_deg_analysis(tcga_gtex_mrna_pheno, project_name, output_dir)
+}
+```
+
+## 2. Merge DEG result
+
+```{r}
+file_path <- "../data/degressig"
+file_list <- list.files(path = file_path, pattern = "deg_sig_.*\\.csv", full.names = TRUE)
+result_df <- data.frame()
+for (file in file_list) {
+  data <- read.csv(file, row.names = 1)  
+  tumor_name <- gsub("^deg_sig_|\\.csv$", "", basename(file))
+  data$Gene <- rownames(data)
+  data <- data[, c("Gene", "log2FoldChange")]
+  if (ncol(result_df) == 0) {
+    result_df <- data
+  } else {
+    result_df <- merge(result_df, data, by = "Gene", all = TRUE)
+  }
+  colnames(result_df)[ncol(result_df)] <- tumor_name
+}
+head(result_df)
+saveRDS(result_df,"../rds/degressig.rds")
+```
+
+## 3. Heatmap of DEG fc
+
+```{r}
+# GTEx_normal TCGA_normal TCGA_tumor
+#   ACC          128           0         77
+#   BLCA           9          19        407
+#   BRCA         179         113       1098
+#   CESC          10           3        306
+#   CHOL           0           9         36
+#   COAD         308          41        288
+#   DLBC         444           0         47
+#   ESCA         653          13        182
+#   GBM         1152           0        165
+#   HNSC           0          44        520
+#   KICH          28          25         66
+#   KIRC           0          72        531
+#   KIRP           0          32        289
+#   LAML          70           0        173
+#   LGG            0           0        522
+#   LIHC         110          50        371
+#   LUAD         288          59        515
+#   LUSC           0          50        498
+#   MESO           0           0         87
+#   OV            88           0        427
+#   PAAD         167           4        179
+#   PCPG           0           3        182
+#   PRAD         100          52        496
+#   READ           0          10         92
+#   SARC           0           2        262
+#   SKCM         812           1        469
+#   STAD         174          36        414
+#   TGCT         165           0        137
+#   THCA         279          59        512
+#   THYM           0           2        119
+#   UCEC          78          13        181
+#   UCS            0           0         57
+#   UVM            0           0         79
+```
+
+```{r}
+file <- "../rds/degressig.rds"
+ressig <- readRDS(file)  
+ressig[is.na(ressig)] <- 0
+ressig <- ressig %>% dplyr::select(-ACC,-DLBC,-GBM,-LAML,-LGG,-OV,-TGCT,-UCS)
+```
+
+```{r}
+necroptosis_genes <- readRDS("../rds/necroptosis_genes.rds")
+pyroptosis_genes <- readRDS("../rds/pyroptosis_genes.rds")
+ferroptosis_genes <- readRDS("../rds/ferroptosis_genes.rds")
+```
+
+```{r}
+get_data <- function(genes, data, pathway) {
+  df <- data[rownames(data) %in% genes, ]
+  df$Gene <- rownames(df)
+  df$Pathway <- pathway
+  return(df)
+}
+
+necroptosis_data <- get_data(necroptosis_genes, ressig, "Necroptosis")
+ferroptosis_data <- get_data(ferroptosis_genes, ressig, "Ferroptosis")
+pyroptosis_data <- get_data(pyroptosis_genes, ressig, "Pyroptosis")
+
+combined_data <- bind_rows(
+  necroptosis_data, 
+  ferroptosis_data, 
+  pyroptosis_data
+)
+
+combined_data <- combined_data %>% dplyr::select(Gene, Pathway, everything())
+```
+
+
+```{r}
+plot_heatmap <- function(data, pathway_name) {
+  # 不再根据 Group 分组，直接使用所有数据
+  matrix_data <- as.matrix(data[, !(names(data) %in% c("Pathway", "Gene"))])
+  rownames(matrix_data) <- data$Gene
+  
+  # 设置颜色和分界值，更加细致的分区以展示颜色变化
+  breaks <- seq(-3, 3, length.out = 100)
+  colors <- colorRampPalette(c("#08306b", "#c6dbef", "white", "#fee0d2", "#a50f15"))(length(breaks) - 1)
+  
+  # 使用 pheatmap 绘制热图
+  heatmap_plot <- pheatmap(
+    matrix_data,
+    color = colors,
+    breaks = breaks,
+    cluster_rows = TRUE,   
+    cluster_cols = FALSE,  
+    show_colnames = F,
+    show_rownames = F,
+    # fontsize_row = 8,
+    # fontsize_col = 8,
+    treeheight_row = 0, 
+    treeheight_col = 0, 
+    legend_breaks = c(-3, -2, -1, 0, 1, 2, 3),
+    legend_labels = c("< -3", "-2", "-1", "0", "1", "2", "> 3"),
+    silent = TRUE
+  )
+  
+  return(heatmap_plot)
+}
+```
+
+
+```{r fig.height= 12, fig.width= 10}
+library(gridExtra)
+output_dir <- "../remove_GBM_fig1_2/analysis/"
+for (pathway in unique(combined_data$Pathway)) {
+  pathway_data <- combined_data[combined_data$Pathway == pathway, ]
+  pdf(file = file.path(output_dir, paste0("heatmap_nonlable_", pathway, ".pdf")), width = 6, height = 6)
+  print(plot_heatmap(pathway_data, pathway))
+  dev.off()
+}
+```
+
+```{r}
+plot_heatmap <- function(data, pathway_name) {
+  # 不再根据 Group 分组，直接使用所有数据
+  matrix_data <- as.matrix(data[, !(names(data) %in% c("Pathway", "Gene"))])
+  rownames(matrix_data) <- data$Gene
+  
+  # 设置颜色和分界值，更加细致的分区以展示颜色变化
+  breaks <- seq(-3, 3, length.out = 100)
+  colors <- colorRampPalette(c("#08306b", "#c6dbef", "white", "#fee0d2", "#a50f15"))(length(breaks) - 1)
+  
+  # 使用 pheatmap 绘制热图
+  heatmap_plot <- pheatmap(
+    matrix_data,
+    color = colors,
+    breaks = breaks,
+    cluster_rows = TRUE,   
+    cluster_cols = FALSE,  
+    show_colnames = T,
+    show_rownames = T,
+    # fontsize_row = 8,
+    # fontsize_col = 8,
+    treeheight_row = 0, 
+    treeheight_col = 0, 
+    legend_breaks = c(-3, -2, -1, 0, 1, 2, 3),
+    legend_labels = c("< -3", "-2", "-1", "0", "1", "2", "> 3"),
+    silent = TRUE
+  )
+  
+  return(heatmap_plot)
+}
+```
+
+```{r fig.height= 12, fig.width= 10}
+library(gridExtra)
+output_dir <- "../remove_GBM_fig1_2/analysis/"
+for (pathway in unique(combined_data$Pathway)) {
+  pathway_data <- combined_data[combined_data$Pathway == pathway, ]
+  pdf(file = file.path(output_dir, paste0("heatmap_lable_", pathway, ".pdf")), width = 6, height = 8)
+  print(plot_heatmap(pathway_data, pathway))
+  dev.off()
+}
+```
+
+## 4. Correlation analysis
+
+```{r fig.height= 10, fig.width= 10}
+library(pheatmap)
+
+output_dir <- "../remove_GBM_fig1_2/analysis/"
+pathways <- unique(combined_data$Pathway)
+colors <- colorRampPalette(c("#08306b", "#c6dbef", "white", "#fee0d2", "#a50f15"))(50)
+
+for (pathway_name in pathways) {
+  pathway_data <- combined_data[combined_data$Pathway == pathway_name, ]
+  
+  rownames(pathway_data) <- pathway_data$Gene
+  exp_data <- as.matrix(pathway_data[, !(names(pathway_data) %in% c("Pathway", "Gene"))])
+  
+  cor_matrix <- cor(t(exp_data), method = "spearman")
+  
+  pdf(file = file.path(output_dir, paste0("correlation_heatmap_lable_", pathway_name, ".pdf")), width = 7, height = 7)
+  
+  pheatmap(cor_matrix,
+           color = colors,
+            show_colnames = T,
+            show_rownames = T,
+            fontsize_row = 8,
+            fontsize_col = 8,
+            treeheight_row = 0, 
+            treeheight_col = 0, 
+           breaks = seq(-1, 1, length.out = 51),
+           clustering_method = "complete",
+           display_numbers = FALSE)
+  
+  dev.off()  
+}
+```
