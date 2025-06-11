@@ -1,0 +1,330 @@
+---
+title: "Figure 6"
+output: html_document
+date: "2025-04-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F,message = F)
+library(dplyr)
+library('org.Mm.eg.db')
+library('clusterProfiler')
+library(biomaRt)
+library(reactome.db)
+library(ReactomePA)
+library(tidyverse)
+library(data.table)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(enrichplot)
+library(ggplot2)    
+library(stringr)
+library(ggrepel)
+library(DESeq2)
+library(ComplexHeatmap)
+library(circlize)
+library(easyTCGA)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(gridExtra)
+library(future)
+options(future.globals.maxSize = 6 * 1024^3) 
+plan(multicore, workers = 12)
+library(estimate)
+```
+
+## 1. Run ESTIMATE
+```{r}
+load("TCGA-PAAD.Rdata")
+exprSet= exp[,Group=='tumor']
+exprSet[1:3,1:3]
+```
+
+```{r}
+dat=log2(edgeR::cpm(exprSet)+1)
+library(estimate)
+estimate <- function(dat,pro){
+  input.f=paste0(pro,'_estimate_input.txt')
+  output.f=paste0(pro,'_estimate_gene.gct')
+  output.ds=paste0(pro,'_estimate_score.gct')
+  write.table(dat,file = input.f,sep = '\t',quote = F)
+  library(estimate)
+  filterCommonGenes(input.f=input.f,
+                    output.f=output.f ,
+                    id="GeneSymbol")
+  estimateScore(input.ds = output.f,
+                output.ds=output.ds,
+                platform="illumina")  
+  scores=read.table(output.ds,skip = 2,header = T)
+  rownames(scores)=scores[,1]
+  scores=t(scores[,3:ncol(scores)])
+  return(scores)
+}
+pro='PAAD'
+scores=estimate(dat,pro)
+```
+
+```{r}
+head(scores)
+TumorPurity = cos(0.6049872018+0.0001467884 * scores[,3])
+```
+
+## 2.Integrate Purity
+
+```{r}
+load("risk_group.RData")
+paad_lasso_group <- subset(dat2, project == "PAAD")
+paad_lasso_group$sample_id <- rownames(paad_lasso_group)
+```
+
+```{r}
+load("TCGA_pancancer_mrna_clin.rdata")
+paad_mrna_clin <- subset(tcga_mrna_clin, project == "PAAD")
+library(dplyr)
+paad_lasso_group$sample_id <- gsub("_", "-", paad_lasso_group$sample_id)
+paad_filtered_sorted_clin <- paad_mrna_clin %>%
+  semi_join(paad_lasso_group, by = "sample_id") %>%
+  arrange(factor(sample_id, levels = paad_lasso_group$sample_id))
+rownames(paad_filtered_sorted_clin) <- paad_filtered_sorted_clin$sample_id
+paad_ciber_exp <- paad_filtered_sorted_clin[,c(35:ncol(paad_filtered_sorted_clin))]
+paad_ciber_group <- paad_lasso_group[,c(27,26,25)]
+paad_ciber_exp <- t(paad_ciber_exp)
+```
+
+```{r}
+paad_ciber_group$ID_dot <- paste0(gsub("-", ".", paad_ciber_group$sample_id), "A")
+paad_ciber_group$TumorPurity <- TumorPurity[paad_ciber_group$ID_dot]
+paad_ciber_group_filtered <- paad_ciber_group[paad_ciber_group$TumorPurity > 0.6, ]
+kept_samples <- paad_ciber_group_filtered$sample_id[paad_ciber_group_filtered$sample_id %in% colnames(paad_ciber_exp)]
+paad_ciber_group_filtered <- subset(paad_ciber_group_filtered, sample_id %in% kept_samples)
+paad_ciber_exp_filtered <- paad_ciber_exp[, kept_samples]
+setequal(colnames(paad_ciber_exp_filtered), paad_ciber_group_filtered$sample_id)
+
+```
+
+## 3. Analysis Cibersort
+
+```{r}
+library(future)
+plan("multicore", workers = 8)
+options(future.globals.maxSize = 20 * 1024^3)
+#plan(NULL)
+library(data.table)
+library(dplyr)
+library(tidyverse)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(data.table)
+library(tinyarray)
+library('CIBERSORT')
+
+```
+
+```{r}
+load("paad_ciber_exp_group_purityselect.RData")
+head(paad_ciber_exp_filtered)
+nrow(paad_ciber_exp_filtered)
+exp_ciber = paad_ciber_exp_filtered[apply(paad_ciber_exp_filtered, 1, function(x) sum(x > 0) > 0.5*ncol(paad_ciber_exp_filtered)), ]
+nrow(exp_ciber)
+
+Group <- paad_ciber_group_filtered$ri
+table(Group)
+
+```
+
+```{r}
+exp_ciber <- as.matrix(exp_ciber)
+results <- cibersort(sig_matrix = LM22, mixture_file = exp_ciber,perm = 100,QN = F)
+head(results[,1:4],n=12)
+save(exp_ciber,results,paad_ciber_group_filtered,Group,
+     file = "./paad_purityselect_panlasso_risk_group_cibersort.Rdata")
+
+```
+
+
+```{r}
+load("./paad_purityselect_panlasso_risk_group_cibersort.Rdata")
+```
+
+```{r}
+library(pheatmap)
+library(RColorBrewer)
+re <- results[,-(23:25)]
+k <- apply(re,2,function(x) {sum(x == 0) < nrow(results)/2})
+table(k)
+re2 <- as.data.frame(t(re[,k]))
+table(Group)
+an = data.frame(group = Group,
+                row.names = colnames(exp_ciber))
+```
+
+
+```{r warning=FALSE ,fig.width=12}
+mypalette <- colorRampPalette(brewer.pal(8,"Set1"))
+dat <- re %>% 
+  as.data.frame() %>%
+  rownames_to_column("Sample") %>% 
+  mutate(group = Group) %>% 
+  gather(key = Cell_type,value = Proportion,-Sample,-group) %>% 
+  arrange(group)
+
+dat$Sample = factor(dat$Sample,ordered = T,levels = unique(dat$Sample)) 
+dat2 = data.frame(a = 1:ncol(exp_ciber),
+                  b = 1,
+                  group = sort(Group)) 
+
+```
+
+```{r warning=FALSE ,fig.width=12}
+p1 = ggplot(dat2,aes(x = a, y = b)) + 
+      geom_tile(aes(fill = group)) + 
+      scale_fill_manual(values = c("#E7B800", "#2E9FDF")) +
+      theme(panel.grid = element_blank(), 
+            panel.background = element_blank(), 
+            axis.line = element_blank(), 
+            axis.ticks = element_blank(), 
+            axis.text = element_blank(), 
+            axis.title = element_blank()) + 
+      scale_x_continuous(expand = c(0, 0)) +
+      labs(fill = "Group")
+mypalette <- colorRampPalette(brewer.pal(8,"Set1"))
+
+p2 = ggplot(dat,aes(Sample, Proportion,fill = Cell_type)) + 
+  geom_bar(stat = "identity") +
+  labs(fill = "Cell Type",x = "",y = "Estiamted Proportion") + 
+  theme_bw() +
+  theme(#axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+        ) + 
+  theme(
+    axis.text.x = element_blank(),  
+    axis.ticks.x = element_blank(),  
+    axis.title.x = element_blank()   
+  ) +
+  scale_y_continuous(expand = c(0.01,0)) +
+  scale_fill_manual(values = mypalette(22))
+
+```
+
+```{r warning=FALSE ,fig.height=8 ,fig.width=12}
+library(cowplot)
+
+p1_no_legend <- p1 + theme(legend.position = "top")
+p2_no_legend <- p2 + theme(legend.position = "bottom")
+
+combined_plot <- plot_grid(
+  p1_no_legend, 
+  p2_no_legend, 
+  ncol = 1, 
+  rel_heights = c(0.15, 1)
+)
+print(combined_plot)
+
+pdf(file = "./heatmap_cibersort.pdf", width = 14, height = 8)
+print(combined_plot)
+dev.off()
+
+```
+
+```{r warning=FALSE, fig.height= 10, fig.width=15}
+k = colSums(re)>0;table(k)
+re = re[,k]
+library(tinyarray)
+library(RColorBrewer)
+myPalette <- c("#E7B800", "#2E9FDF")
+draw_boxplot(t(re),factor(Group),
+             drop = F,
+             sort = T,
+             p.label = F,
+             color = myPalette)+
+  labs(x = "Cell Type", y = "Estimated Proportion") 
+
+
+pdf(file = "./boxplot_cibersort.pdf", width = 8, height = 4)
+draw_boxplot(t(re),factor(Group),
+             drop = T,
+             sort = F,
+             p.label = F,
+             color = myPalette)+
+  labs(x = "Cell Type", y = "Estimated Proportion") 
+dev.off()
+```
+
+## 4. Validation TLR4 expression
+
+```{r}
+load("GSE71729_all.Rdata")
+```
+
+```{r}
+pancreas_samples <- cli$geo_accession[cli$source_name_ch2 %in% c("Pancreas_Primary","Pancreas_Normal")]
+exp_pancreas <- exp[, pancreas_samples]
+exp_pancreas[1:4, 1:4]
+cli_pancreas <- cli[cli$source_name_ch2 %in% c("Pancreas_Primary","Pancreas_Normal"), 
+                            c("geo_accession", "source_name_ch2","death_event_1death_0censor:ch2")]
+```
+
+```{r}
+exp_pancreas <- readRDS("../rds/GSE71729_exp.rds")
+cli_pancreas <- readRDS("../rds/GSE71729_cli.rds")
+load("~/shenyu/genome/hg38_gene_efflen.Rdata")
+calculate_TPM <- function(humancounts, geneid_efflen) {
+  common_genes <- intersect(rownames(humancounts), geneid_efflen$SYMBOL)
+  geneid_efflen_filtered <- geneid_efflen[geneid_efflen$SYMBOL %in% common_genes, ]
+  humancounts_filtered <- humancounts[common_genes, ]
+  geneid_efflen_filtered <- geneid_efflen_filtered[order(match(geneid_efflen_filtered$SYMBOL, common_genes)), ]
+  humancounts_filtered <- humancounts_filtered[order(match(common_genes, rownames(humancounts_filtered))), ]
+  effLen <- geneid_efflen_filtered$efflen
+  Counts2TPM <- function(counts, effLen) {
+    rate <- log(counts) - log(effLen)
+    denom <- log(sum(exp(rate)))
+    exp(rate - denom + log(1e6))
+  }
+  human_tpm <- apply(humancounts_filtered, 2, Counts2TPM, effLen = effLen)
+  return(human_tpm)
+}
+tpm_pancreas <- calculate_TPM(exp_pancreas, geneid_efflen)
+```
+
+```{r}
+drawdata <- t(log2(tpm_pancreas+1)) %>% as.data.frame()
+drawdata <- dplyr::select(drawdata, TLR4)
+drawdata$Type <- cli_pancreas$source_name_ch2
+drawdata$samples <- rownames(drawdata)
+longdata <- pivot_longer(drawdata, cols = -c(samples, Type), names_to = "Gene", values_to = "Expression")
+```
+
+```{r fig.width=3,fig.height=3}
+library(ggplot2)
+library(tidyr)
+library(ggpubr)
+
+p <- ggplot(drawdata, aes(x=Type, y=TLR4, color=Type)) +
+  geom_boxplot(aes(fill=Type)) + 
+  scale_fill_manual(values = c("#00AFBB", "#E7B800")) +
+  scale_color_manual(values = c("black", "black")) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "none",
+    text = element_text(size = 10, color = "black"),
+    axis.text = element_text(size = 10, color = "black"),
+    axis.title = element_text(size = 10, color = "black"),
+    plot.title = element_text(size = 10, color = "black")  
+  ) +
+  scale_x_discrete(labels = c("Normal", "Tumor")) +  
+  labs(y = "Expression of TLR4") +
+  stat_compare_means(
+    method = "wilcox.test",
+    label = "p.signif",
+    label.x = 1.5, 
+    label.y = 2,
+    show.legend = FALSE
+  )
+```
+
+
+
