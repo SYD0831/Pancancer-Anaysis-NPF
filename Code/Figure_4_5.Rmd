@@ -1,0 +1,174 @@
+---
+title: "Figure 4"
+output: html_document
+date: "2025-04-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F,message = F)
+library(dplyr)
+library('org.Mm.eg.db')
+library('clusterProfiler')
+library(biomaRt)
+library(reactome.db)
+library(ReactomePA)
+library(tidyverse)
+library(data.table)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(enrichplot)
+library(ggplot2)    
+library(stringr)
+library(ggrepel)
+library(DESeq2)
+library(ComplexHeatmap)
+library(circlize)
+library(easyTCGA)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(gridExtra)
+library(future)
+options(future.globals.maxSize = 6 * 1024^3) 
+plan(multicore, workers = 12)
+```
+
+## 1. Lasso-cox model Analysis
+
+```{r}
+load("TCGA_pancancer_mrna_clin.rdata")
+expr_data = tcga_mrna_clin
+```
+
+```{r}
+gene_related <- readRDS("./rds/geneset_lassocox.rds")
+gene_related <- intersect(colnames(expr_data), gene_related)
+
+gene_ressig <- readRDS("./rds/Merge_log2FoldChange.rds")
+gene_ressig <- gene_ressig[gene_ressig$Gene %in% gene_related,]
+num_abs_greater_1 <- apply(gene_ressig[,-1], 1, function(x) sum(abs(x) > 1, na.rm = TRUE))
+half_tumors <- ncol(gene_ressig[,-1]) / 2
+genes_highly_expressed <- gene_ressig$Gene[num_abs_greater_1 > half_tumors]
+
+gene_related <- intersect(colnames(expr_data), genes_highly_expressed)
+
+tumor_data <- expr_data %>%
+  filter(ifelse(as.numeric(str_sub(sample_id, 14, 15)) < 10, TRUE, FALSE)) %>%
+  filter(!is.na(OS.time) & !is.na(OS))
+
+meta <- tumor_data[,1:34]
+exprSet2 <- tumor_data[, gene_related, drop = FALSE]
+rownames(exprSet2) <- tumor_data$sample_id
+
+```
+
+
+```{r fig.width= 6,fig.height=4}
+library(glmnet)
+
+x=as.matrix(exprSet2)
+y=meta$OS
+
+set.seed(1006)
+cv_fit <- cv.glmnet(x=x, y=y)
+plot(cv_fit)
+
+fit <- glmnet(x=x, y=y)
+plot(fit,xvar = "lambda")
+
+```
+
+```{r}
+model_lasso_min <- glmnet(x=x, y=y,lambda=cv_fit$lambda.min)
+model_lasso_1se <- glmnet(x=x, y=y,lambda=cv_fit$lambda.1se)
+choose_gene_min=rownames(model_lasso_min$beta)[as.numeric(model_lasso_min$beta)!=0]
+choose_gene_1se=rownames(model_lasso_1se$beta)[as.numeric(model_lasso_1se$beta)!=0]
+length(choose_gene_min)
+length(choose_gene_1se)
+choose_gene_1se
+
+```
+```{r}
+g = choose_gene_1se
+e= exprSet2[,g]
+rownames(e)= str_replace_all(rownames(e),"-","_")
+dat=cbind(meta,e)
+
+dat$gender=as.numeric(factor(dat$gender))
+colnames(dat)[4] <- "age"
+dat <- dat[,c(3:5,26,27,35:ncol(dat))]
+vl <- colnames(dat)[c(6:ncol(dat))]
+
+library(survival)
+library(survminer)
+dat2 = na.omit(dat)
+
+```
+
+## 2. Multi cox 
+
+```{r}
+model = coxph(formula = Surv(OS.time, OS) ~  TFRC + OGT + AKR1C3 + DHFR + LCN2 + STEAP3 + TREM2 + AXL + AURKA + CD36 + PROM2 + CHMP4C + LTF + GZMB + TLR4 + ALOX15B + SLC7A11 + PARK2 + FASLG + IL1A + ALOX15 + MPO + ELANE, data = dat2)
+
+model$coefficients
+```
+
+```{r fig.width= 8,fig.height=8}
+library(survival)
+library(survminer)
+
+ggforest(model,data = dat2)
+```
+
+## 3. Distribution
+
+```{r fig.width= 5,fig.height=5}
+multi_cox_genes <- c("TFRC", "OGT", "AKR1C3", "DHFR", "LCN2", "STEAP3", "TREM2", "AXL", "AURKA", 
+                     "CD36", "PROM2", "CHMP4C", "LTF", "GZMB", "TLR4", "ALOX15B", "SLC7A11", 
+                     "PARK2", "FASLG", "IL1A", "ALOX15", "MPO", "ELANE")
+
+multi_cox_genes_info <- subset(gene_info, Gene %in% multi_cox_genes)
+
+pathway_counts <- table(multi_cox_genes_info$Pathway)
+
+labels <- paste(names(pathway_counts), "(", pathway_counts, ")", sep = "")
+
+colors <- c("#E68B81","#7DA6C6","#B7B2D0")
+
+# pdf(file = "pie_plot_multi_cox.pdf", width = 5, height = 5)
+
+pie(pathway_counts, 
+    main = "Distribution of Genes Across NPF Pathways", 
+    labels = labels, 
+    col = colors, 
+    cex = 0.8, 
+    border = "white", 
+    radius = 1)
+# dev.off()
+
+```
+
+## 4. Survival plot
+
+```{r}
+fp <- predict(model,newdata = dat2)
+library(Hmisc)
+options(scipen=200)
+with(dat2,rcorr.cens(fp,Surv(OS.time, OS)))
+```
+
+```{r fig.height= 5,fig.width=6}
+dat2$fp <-fp
+names(fp) = rownames(dat2)
+ri = ifelse(fp<median(fp),"lowrisk","highrisk")
+ri = factor(ri,levels = c("lowrisk","highrisk"))
+dat2$ri <-ri
+
+sfit <- survfit(Surv(OS.time, OS)~ri, data=dat2)
+save(ri, sfit, dat2, file = "my_data.RData")
+ggsurvplot(sfit,palette = c("#E7B800", "#2E9FDF"),
+           risk.table =F,pval =F,
+           conf.int =F,xlab ="Time in months", 
+           ggtheme =theme_light())
+```
