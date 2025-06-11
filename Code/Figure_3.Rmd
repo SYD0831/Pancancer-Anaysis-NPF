@@ -1,0 +1,402 @@
+---
+title: "Figure 3"
+output: html_document
+date: "2025-04-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F,message = F)
+library(dplyr)
+library('org.Mm.eg.db')
+library('clusterProfiler')
+library(biomaRt)
+library(reactome.db)
+library(ReactomePA)
+library(tidyverse)
+library(data.table)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(enrichplot)
+library(ggplot2)    
+library(stringr)
+library(ggrepel)
+library(DESeq2)
+library(ComplexHeatmap)
+library(circlize)
+library(easyTCGA)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(gridExtra)
+library(future)
+options(future.globals.maxSize = 6 * 1024^3) 
+plan(multicore, workers = 12)
+```
+
+## 1. OS
+
+```{r}
+cox_results <- readRDS("../rds/ssgsea_cox_os_res.rds")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG","MESO", "OV", "TGCT", "UCS", "UVM")
+cox_results <- cox_results %>% filter(!Project %in% exclude_cancer_types)
+
+```
+
+```{r fig.height= 5, fig.width= 10}
+cox_sig <- cox_results[order(cox_results$p_value), ]
+
+projects <- cox_sig$Project
+
+HR <- sprintf("%.3f", as.numeric(cox_sig$HR))
+HRLow <- as.numeric(cox_sig$Lower_CI)
+HRHigh <- as.numeric(cox_sig$Upper_CI)
+HR95 <- paste0(HR, " (", sprintf("%.3f", HRLow), "-", sprintf("%.3f", HRHigh), ")")
+pValue <- ifelse(cox_sig$p_value < 0.001, "<0.001", sprintf("%.3f", as.numeric(cox_sig$p_value)))
+
+log_HR <- log2(as.numeric(cox_sig$HR))
+log_HRLow <- log2(HRLow)
+log_HRHigh <- log2(HRHigh)
+
+finite_HRLow <- log_HRLow[is.finite(log_HRLow)]
+finite_HRHigh <- log_HRHigh[is.finite(log_HRHigh)]
+
+n <- nrow(cox_sig)
+nRow <- n + 1
+ylim <- c(1, nRow)
+
+pdf(file="./os_forestplot_score_cox_forest_log2HR.pdf", width = 10, height = 8)
+
+layout(matrix(c(1,2), nc=2), width=c(2, 1.5))
+
+xlim_left <- c(0, 2)
+par(mar=c(4, 2.5, 2, 1))
+plot(0, xlim=xlim_left, ylim=ylim, type="n", axes=FALSE, xlab="", ylab="")
+text(0, n:1, projects, adj=0, cex=0.8)  
+text(1, n:1, pValue, adj=1, cex=0.8)  
+text(1, n+1, 'pValue', cex=0.8, font=2, adj=1)  
+text(2, n:1, HR95, adj=1, cex=0.8)  
+text(2, n+1, 'HR(95% CI)', cex=0.8, font=2, adj=1)  
+
+xlim_right <- c(min(finite_HRLow, na.rm = TRUE), max(finite_HRHigh, na.rm = TRUE))
+par(mar=c(4, 1, 2, 1), mgp=c(2, 0.5, 0))
+plot(0, xlim=xlim_right, ylim=ylim, type="n", axes=FALSE, ylab="", xaxs="i", xlab="log2(Hazard ratio)")
+arrows(log_HRLow, n:1, log_HRHigh, n:1, angle=90, code=3, length=0.05, col="darkblue", lwd=2.5)
+abline(v=0, col="black", lty=2, lwd=2)  
+boxcolor <- ifelse(log_HR > 0, 'red', 'green')  
+points(log_HR, n:1, pch=15, col=boxcolor, cex=1.3)  
+axis(1)  
+
+dev.off()
+
+```
+
+
+## 2. DSS
+
+
+```{r}
+cox_results <- readRDS("../rds/ssgsea_cox_DSS_res.rds")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG","MESO", "OV", "TGCT", "UCS", "UVM")
+cox_results <- cox_results %>% filter(!Project %in% exclude_cancer_types)
+```
+
+
+```{r fig.height= 5, fig.width= 10}
+cox_sig <- cox_results[order(cox_results$p_value), ]
+projects <- cox_sig$Project
+HR <- sprintf("%.3f", as.numeric(cox_sig$HR))
+HRLow <- as.numeric(cox_sig$Lower_CI)
+HRHigh <- as.numeric(cox_sig$Upper_CI)
+HR95 <- paste0(HR, " (", sprintf("%.3f", HRLow), "-", sprintf("%.3f", HRHigh), ")")
+pValue <- ifelse(cox_sig$p_value < 0.001, "<0.001", sprintf("%.3f", as.numeric(cox_sig$p_value)))
+
+log_HR <- log2(as.numeric(cox_sig$HR))
+log_HRLow <- log2(HRLow)
+log_HRHigh <- log2(HRHigh)
+
+finite_HRLow <- log_HRLow[is.finite(log_HRLow)]
+finite_HRHigh <- log_HRHigh[is.finite(log_HRHigh)]
+
+n <- nrow(cox_sig)
+nRow <- n + 1
+ylim <- c(1, nRow)
+
+pdf(file="./DSS_forestplot_score_cox_forest_log2HR.pdf", width = 10, height = 8)
+
+layout(matrix(c(1,2), nc=2), width=c(2, 1.5))
+
+xlim_left <- c(0, 2)
+par(mar=c(4, 2.5, 2, 1))
+plot(0, xlim=xlim_left, ylim=ylim, type="n", axes=FALSE, xlab="", ylab="")
+text(0, n:1, projects, adj=0, cex=0.8)  
+text(1, n:1, pValue, adj=1, cex=0.8)  
+text(1, n+1, 'pValue', cex=0.8, font=2, adj=1)  
+text(2, n:1, HR95, adj=1, cex=0.8)  
+text(2, n+1, 'HR(95% CI)', cex=0.8, font=2, adj=1)  
+
+xlim_right <- c(min(finite_HRLow, na.rm = TRUE), max(finite_HRHigh, na.rm = TRUE))
+par(mar=c(4, 1, 2, 1), mgp=c(2, 0.5, 0))
+plot(0, xlim=xlim_right, ylim=ylim, type="n", axes=FALSE, ylab="", xaxs="i", xlab="log2(Hazard ratio)")
+arrows(log_HRLow, n:1, log_HRHigh, n:1, angle=90, code=3, length=0.05, col="darkblue", lwd=2.5)
+abline(v=0, col="black", lty=2, lwd=2)  
+boxcolor <- ifelse(log_HR > 0, 'red', 'green')  
+points(log_HR, n:1, pch=15, col=boxcolor, cex=1.3)  
+axis(1)  
+
+dev.off()
+
+```
+
+
+## 3. PFI
+
+
+```{r}
+cox_results <- readRDS("../rds/ssgsea_cox_PFI_res.rds")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG","MESO", "OV", "TGCT", "UCS", "UVM")
+cox_results <- cox_results %>% filter(!Project %in% exclude_cancer_types)
+```
+
+
+```{r fig.height= 5, fig.width= 10}
+cox_sig <- cox_results[order(cox_results$p_value), ]
+projects <- cox_sig$Project
+HR <- sprintf("%.3f", as.numeric(cox_sig$HR))
+HRLow <- as.numeric(cox_sig$Lower_CI)
+HRHigh <- as.numeric(cox_sig$Upper_CI)
+HR95 <- paste0(HR, " (", sprintf("%.3f", HRLow), "-", sprintf("%.3f", HRHigh), ")")
+pValue <- ifelse(cox_sig$p_value < 0.001, "<0.001", sprintf("%.3f", as.numeric(cox_sig$p_value)))
+
+log_HR <- log2(as.numeric(cox_sig$HR))
+log_HRLow <- log2(HRLow)
+log_HRHigh <- log2(HRHigh)
+
+finite_HRLow <- log_HRLow[is.finite(log_HRLow)]
+finite_HRHigh <- log_HRHigh[is.finite(log_HRHigh)]
+
+n <- nrow(cox_sig)
+nRow <- n + 1
+ylim <- c(1, nRow)
+
+pdf(file="./PFI_forestplot_score_cox_forest_log2HR.pdf", width = 10, height = 8)
+
+layout(matrix(c(1,2), nc=2), width=c(2, 1.5))
+
+xlim_left <- c(0, 2)
+par(mar=c(4, 2.5, 2, 1))
+plot(0, xlim=xlim_left, ylim=ylim, type="n", axes=FALSE, xlab="", ylab="")
+text(0, n:1, projects, adj=0, cex=0.8) 
+text(1, n:1, pValue, adj=1, cex=0.8)  
+text(1, n+1, 'pValue', cex=0.8, font=2, adj=1)  
+text(2, n:1, HR95, adj=1, cex=0.8)  
+text(2, n+1, 'HR(95% CI)', cex=0.8, font=2, adj=1)  
+
+xlim_right <- c(min(finite_HRLow, na.rm = TRUE), max(finite_HRHigh, na.rm = TRUE))
+par(mar=c(4, 1, 2, 1), mgp=c(2, 0.5, 0))
+plot(0, xlim=xlim_right, ylim=ylim, type="n", axes=FALSE, ylab="", xaxs="i", xlab="log2(Hazard ratio)")
+arrows(log_HRLow, n:1, log_HRHigh, n:1, angle=90, code=3, length=0.05, col="darkblue", lwd=2.5)
+abline(v=0, col="black", lty=2, lwd=2)  
+boxcolor <- ifelse(log_HR > 0, 'red', 'green')  # log2(HR) > 0 对应HR > 1
+points(log_HR, n:1, pch=15, col=boxcolor, cex=1.3)  # log2(HR)点
+axis(1)  
+
+dev.off()
+
+```
+
+
+## 4. DFI
+
+
+```{r}
+cox_results <- readRDS("../rds/ssgsea_cox_DFI_res.rds")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG","MESO", "OV", "TGCT", "UCS", "UVM")
+cox_results <- cox_results %>% filter(!Project %in% exclude_cancer_types)
+```
+
+
+```{r fig.height= 5, fig.width= 10}
+cox_sig <- cox_results[order(cox_results$p_value), ]
+projects <- cox_sig$Project
+HR <- sprintf("%.3f", as.numeric(cox_sig$HR))
+HRLow <- as.numeric(cox_sig$Lower_CI)
+HRHigh <- as.numeric(cox_sig$Upper_CI)
+HR95 <- paste0(HR, " (", sprintf("%.3f", HRLow), "-", sprintf("%.3f", HRHigh), ")")
+pValue <- ifelse(cox_sig$p_value < 0.001, "<0.001", sprintf("%.3f", as.numeric(cox_sig$p_value)))
+
+log_HR <- log2(as.numeric(cox_sig$HR))
+log_HRLow <- log2(HRLow)
+log_HRHigh <- log2(HRHigh)
+
+finite_HRLow <- log_HRLow[is.finite(log_HRLow)]
+finite_HRHigh <- log_HRHigh[is.finite(log_HRHigh)]
+
+n <- nrow(cox_sig)
+nRow <- n + 1
+ylim <- c(1, nRow)
+
+pdf(file="./DFI_forestplot_score_cox_forest_log2HR.pdf", width = 10, height = 8)
+
+layout(matrix(c(1,2), nc=2), width=c(2, 1.5))
+
+xlim_left <- c(0, 2)
+par(mar=c(4, 2.5, 2, 1))
+plot(0, xlim=xlim_left, ylim=ylim, type="n", axes=FALSE, xlab="", ylab="")
+text(0, n:1, projects, adj=0, cex=0.8)  
+text(1, n:1, pValue, adj=1, cex=0.8)  
+text(1, n+1, 'pValue', cex=0.8, font=2, adj=1)  
+text(2, n:1, HR95, adj=1, cex=0.8)  
+text(2, n+1, 'HR(95% CI)', cex=0.8, font=2, adj=1)  
+
+xlim_right <- c(min(finite_HRLow, na.rm = TRUE), max(finite_HRHigh, na.rm = TRUE))
+par(mar=c(4, 1, 2, 1), mgp=c(2, 0.5, 0))
+plot(0, xlim=xlim_right, ylim=ylim, type="n", axes=FALSE, ylab="", xaxs="i", xlab="log2(Hazard ratio)")
+arrows(log_HRLow, n:1, log_HRHigh, n:1, angle=90, code=3, length=0.05, col="darkblue", lwd=2.5)
+abline(v=0, col="black", lty=2, lwd=2)  
+boxcolor <- ifelse(log_HR > 0, 'red', 'green')  
+points(log_HR, n:1, pch=15, col=boxcolor, cex=1.3)  
+axis(1)  
+
+dev.off()
+
+```
+
+
+## 5. Visulization
+
+```{r}
+cox_results <- read.csv("~/shenyu/Project/TCGA_GTEx_Pancancer/Data/ssGSEA_res/ssgsea_cox_os_res.csv")
+saveRDS(cox_results,"../rds/ssgsea_cox_os_res.rds")
+```
+
+
+```{r fig.height= 5, fig.width= 10}
+cox_sig <- cox_results[order(cox_results$p_value), ]
+projects <- cox_sig$Project
+HR <- sprintf("%.3f", as.numeric(cox_sig$HR))
+HRLow <- as.numeric(cox_sig$Lower_CI)
+HRHigh <- as.numeric(cox_sig$Upper_CI)
+HR95 <- paste0(HR, " (", sprintf("%.3f", HRLow), "-", sprintf("%.3f", HRHigh), ")")
+pValue <- ifelse(cox_sig$p_value < 0.001, "<0.001", sprintf("%.3f", as.numeric(cox_sig$p_value)))
+
+# 对 HR、HRLow、HRHigh 进行 log2 转换
+log_HR <- log2(as.numeric(cox_sig$HR))
+log_HRLow <- log2(HRLow)
+log_HRHigh <- log2(HRHigh)
+
+# 确保 log2 转换后的 HRLow 和 HRHigh 是有限的
+finite_HRLow <- log_HRLow[is.finite(log_HRLow)]
+finite_HRHigh <- log_HRHigh[is.finite(log_HRHigh)]
+
+# 计算绘图所需的参数
+n <- nrow(cox_sig)
+nRow <- n + 1
+ylim <- c(1, nRow)
+
+# 设置PDF输出
+pdf(file="~/shenyu/Project/TCGA_GTEx_Pancancer/Data/ssGSEA_res/os_forestplot_score_cox_forest_log2HR.pdf", width = 10, height = 8)
+
+# 调整layout的宽度比例（左侧文本部分宽度减少）
+layout(matrix(c(1,2), nc=2), width=c(2, 1.5))
+
+# 绘制森林图左侧部分（文本和数值）
+xlim_left <- c(0, 2)
+par(mar=c(4, 2.5, 2, 1))
+plot(0, xlim=xlim_left, ylim=ylim, type="n", axes=FALSE, xlab="", ylab="")
+text(0, n:1, projects, adj=0, cex=0.8)  # 项目名称
+text(1, n:1, pValue, adj=1, cex=0.8)  # 调整p值位置
+text(1, n+1, 'pValue', cex=0.8, font=2, adj=1)  # p值标签
+text(2, n:1, HR95, adj=1, cex=0.8)  # 调整HR95位置
+text(2, n+1, 'HR(95% CI)', cex=0.8, font=2, adj=1)  # HR和95% CI标签
+
+# 绘制森林图右侧部分（图形部分），使用 log2(HR)
+xlim_right <- c(min(finite_HRLow, na.rm = TRUE), max(finite_HRHigh, na.rm = TRUE))
+par(mar=c(4, 1, 2, 1), mgp=c(2, 0.5, 0))
+plot(0, xlim=xlim_right, ylim=ylim, type="n", axes=FALSE, ylab="", xaxs="i", xlab="log2(Hazard ratio)")
+arrows(log_HRLow, n:1, log_HRHigh, n:1, angle=90, code=3, length=0.05, col="darkblue", lwd=2.5)
+abline(v=0, col="black", lty=2, lwd=2)  # 竖线在log2(HR)=0处（即HR=1）
+boxcolor <- ifelse(log_HR > 0, 'red', 'green')  # log2(HR) > 0 对应HR > 1
+points(log_HR, n:1, pch=15, col=boxcolor, cex=1.3)  # log2(HR)点
+axis(1)  # 显示x轴
+
+# 结束PDF输出
+dev.off()
+
+```
+
+
+
+## 6. Cox regression of npf score
+
+```{r}
+library(survival)
+library(dplyr)
+library(forestplot)
+tcga_mrna_clin_subset <- tcga_mrna_clin %>%
+  dplyr::select(sample_id, OS, OS.time, DSS, DSS.time, DFI, DFI.time, PFI, PFI.time, project, age_at_initial_pathologic_diagnosis)
+
+merged_data <- inner_join(ressig[,1:2], tcga_mrna_clin_subset, by = "sample_id")
+
+merged_data <- merged_data %>%
+  filter(!is.na(OS.time), !is.na(OS), !is.na(necroptosis_pyroptosis_ferroptosis_related))
+
+library(survival)
+library(dplyr)
+library(forestplot)
+
+perform_cox_analysis <- function(data, time_col, event_col, score_col, project) {
+  
+  cox_model <- try(coxph(Surv(data[[time_col]], data[[event_col]]) ~ data[[score_col]], data = data), silent = TRUE)
+  
+  if (inherits(cox_model, "try-error")) {
+    return(NULL)  
+  }
+  
+  summary_cox <- summary(cox_model)
+  hr <- summary_cox$coefficients[1, "exp(coef)"]  # Hazard ratio
+  ci_lower <- summary_cox$conf.int[1, "lower .95"]  
+  ci_upper <- summary_cox$conf.int[1, "upper .95"]  
+  p_value <- summary_cox$coefficients[1, "Pr(>|z|)"]  # p-value
+  
+  
+  if (ci_upper < ci_lower) {
+    return(NULL)
+  }
+  
+  return(data.frame(
+    Project = project,
+    HR = hr,
+    Lower_CI = ci_lower,
+    Upper_CI = ci_upper,
+    p_value = p_value
+  ))
+}
+
+cox_results <- data.frame(Project = character(),
+                          HR = numeric(),
+                          Lower_CI = numeric(),
+                          Upper_CI = numeric(),
+                          p_value = numeric(),
+                          stringsAsFactors = FALSE)
+
+merged_data <- inner_join(ressig[,1:2], tcga_mrna_clin_subset, by = "sample_id")
+
+merged_data <- merged_data %>%
+  filter(!is.na(OS.time), !is.na(OS), !is.na(necroptosis_pyroptosis_ferroptosis_related))
+
+for (proj in unique(merged_data$project)) {
+  data_subset <- subset(merged_data, project == proj)
+  
+  if (nrow(data_subset) > 20) {  
+    cox_results <- rbind(
+      cox_results,
+      perform_cox_analysis(data_subset, "OS.time", "OS", "necroptosis_pyroptosis_ferroptosis_related", proj)
+    )
+  }
+}
+
+saveRDS(cox_results,"../rds/ssgsea_cox_os_res.rds")
+```
+
+
