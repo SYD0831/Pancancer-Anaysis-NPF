@@ -1,0 +1,381 @@
+---
+title: "Figure2"
+output: html_document
+date: "2025-04-11"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = F,message = F)
+library(dplyr)
+library('org.Mm.eg.db')
+library('clusterProfiler')
+library(biomaRt)
+library(reactome.db)
+library(ReactomePA)
+library(tidyverse)
+library(data.table)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(biomaRt)
+library(enrichplot)
+library(ggplot2)    
+library(stringr)
+library(ggrepel)
+library(DESeq2)
+library(ComplexHeatmap)
+library(pheatmap)
+library(circlize)
+library(easyTCGA)
+library(stringr)
+library(AnnoProbe)
+library(tinyarray)
+library(gridExtra)
+library(survival)
+library(dplyr)
+library(stringr)
+library(future)
+plan("multicore", workers = 8)
+options(future.globals.maxSize = 20 * 1024^3)
+
+```
+
+## 1. Univariate Cox analysis
+```{r}
+load("TCGA_GTEx_pancancer_mrna_pheno.rdata")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG", "MESO","OV", "TGCT", "UCS", "UVM")
+tcga_mrna_clin <- tcga_mrna_clin %>%
+  filter(!project %in% exclude_cancer_types)
+```
+
+```{r}
+perform_cox_analysis <- function(data, gene_list, time_var, status_var) {
+  tumor_data <- data %>%
+    filter(ifelse(as.numeric(str_sub(sample_id, 14, 15)) < 10, TRUE, FALSE)) %>%
+    filter(!is.na(!!sym(time_var)) & !is.na(!!sym(status_var)))  # 确保生存数据完整
+
+  selected_data <- tumor_data[, c(time_var, status_var, gene_list), drop = FALSE]
+  for (gene in gene_list) {
+    selected_data[[gene]] <- round(2^selected_data[[gene]] - 0.001, 2)  # 转换公式
+  }
+  cox_results <- list()
+  for (gene in gene_list) {
+    formula <- as.formula(paste("Surv(", time_var, ", ", status_var, ") ~ ", gene))
+    cox_model <- coxph(formula, data = selected_data)
+    summary_cox <- summary(cox_model)
+    cox_results[[gene]] <- c(HR = summary_cox$coefficients[,"exp(coef)"],
+                             p.value = summary_cox$coefficients[,"Pr(>|z|)"],
+                             CI_lower = summary_cox$conf.int[,"lower .95"],
+                             CI_upper = summary_cox$conf.int[,"upper .95"])
+  }
+  
+  cox_results_df <- do.call(rbind, cox_results) %>% as.data.frame()
+  rownames(cox_results_df) <- gene_list
+  return(cox_results_df)
+}
+```
+
+```{r}
+perform_cox_by_project <- function(data, gene_list, time_var, status_var) {
+  projects <- unique(data$project)
+    all_results <- list()
+  for (project in projects) {
+    # 提取当前项目的数据
+    project_data <- data %>% filter(project == !!project)
+    project_cox_results <- perform_cox_analysis(project_data, gene_list, time_var, status_var)
+    project_cox_results$project <- project
+    project_cox_results$gene <- rownames(project_cox_results)
+    all_results[[project]] <- project_cox_results
+  }
+  combined_results <- do.call(rbind, all_results)
+  return(combined_results)
+}
+```
+
+```{r}
+necroptosis_genes <- unique(necroptosis_genes)
+necroptosis_genes <- necroptosis_genes[necroptosis_genes %in% colnames(tcga_mrna_clin)]
+
+pyroptosis_genes <- unique(pyroptosis_genes)
+pyroptosis_genes <- pyroptosis_genes[pyroptosis_genes %in% colnames(tcga_mrna_clin)]
+
+ferroptosis_genes <- unique(ferroptosis_genes)
+ferroptosis_genes <- ferroptosis_genes[ferroptosis_genes %in% colnames(tcga_mrna_clin)]
+
+combined_results_df <- perform_cox_by_project(tcga_mrna_clin, necroptosis_genes, "OS.time", "OS")
+write.csv(combined_results_df, "./Data/uni_cox_result/necroptosis_uni_cox_results.csv", row.names = FALSE)
+
+combined_results_df <- perform_cox_by_project(tcga_mrna_clin, pyroptosis_genes, "OS.time", "OS")
+write.csv(combined_results_df, "./Data/uni_cox_result/pyroptosis_uni_cox_results.csv", row.names = FALSE)
+
+combined_results_df <- perform_cox_by_project(tcga_mrna_clin, ferroptosis_genes, "OS.time", "OS")
+write.csv(combined_results_df, "./Data/uni_cox_result/ferroptosis_uni_cox_results.csv", row.names = FALSE)
+```
+
+```{r}
+visualize_cox_heatmap <- function(file_path, output_pdf) {
+  cox_data <- read.csv(file_path)
+  
+  heatmap_data <- cox_data %>%
+    mutate(
+      significance = ifelse(p.value <= 0.05, TRUE, FALSE),
+      effect = ifelse(HR > 1, "Risky", "Protective"),
+      color = ifelse(significance & effect == "Risky", "Risky",
+                     ifelse(significance & effect == "Protective", "Protective", "p>0.05"))
+    ) %>%
+    dplyr::select(project, gene, color) %>%
+    spread(key = project, value = color) %>%
+    column_to_rownames("gene")
+  
+  heatmap_matrix <- as.matrix(heatmap_data)
+  heatmap_matrix[is.na(heatmap_matrix)] <- "p>0.05"
+  
+  # "Risky" -> 1, "Protective" -> -1, "p>0.05" -> 0
+  num_matrix <- matrix(0, nrow = nrow(heatmap_matrix), ncol = ncol(heatmap_matrix))
+  rownames(num_matrix) <- rownames(heatmap_matrix)
+  colnames(num_matrix) <- colnames(heatmap_matrix)
+  num_matrix[heatmap_matrix == "Risky"] <- 1
+  num_matrix[heatmap_matrix == "Protective"] <- -1
+  
+  color_palette <- c("#08306b", "grey90", "#a50f15")
+  names(color_palette) <- c("-1", "0", "1")
+    p1 <- pheatmap(num_matrix,
+           color = color_palette,
+           cluster_rows = TRUE,
+           cluster_cols = TRUE,
+           show_rownames = T,
+           show_colnames = T,    
+           fontsize_row = 8,
+           fontsize_col = 8,
+           treeheight_row = 0, 
+           treeheight_col = 0, 
+           legend_labels = c("Protective", "p>0.05", "Risky"),
+           legend_breaks = c(-1, 0, 1))
+
+  pdf(file = file.path(output_pdf), width = 7, height = 7)
+  print(p1)
+  dev.off()
+  return(p1)
+}
+```
+
+```{r fig.height= 7, fig.width= 7}
+visualize_cox_heatmap("./Data/uni_cox_result/necroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/necroptosis_uni_cox_lableresult.pdf")
+visualize_cox_heatmap("./Data/uni_cox_result/pyroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/pyroptosis_uni_cox_lableresult.pdf")
+visualize_cox_heatmap("./Data/uni_cox_result/ferroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/ferroptosis_uni_cox_lableresult.pdf")
+```
+
+```{r}
+visualize_cox_heatmap("./Data/uni_cox_result/necroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/necroptosis_uni_cox_nonlableresult.pdf")
+visualize_cox_heatmap("./Data/uni_cox_result/pyroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/pyroptosis_uni_cox_nonlableresult.pdf")
+visualize_cox_heatmap("./Data/uni_cox_result/ferroptosis_uni_cox_results.csv",
+                      "./Data/uni_cox_result/ferroptosis_uni_cox_nonlableresult.pdf")
+```
+
+## 2. ssGSEA and GSVA
+
+```{r}
+load("TCGA_GTEx_pancancer_mrna_pheno.rdata")
+expr_data = tcga_gtex_mrna_pheno
+gmt_file = "NPFRG_Cellular_death_gene_sets.gmt"
+output_file = "removebatch_ssgsea_tcga_gtex_mrna_clin.csv"
+geneSet_npfr <- getGmt(gmt_file)
+tumor_data <- expr_data
+if (any(duplicated(tumor_data$sample_id))) {
+  cat("发现重复的 sample_id，移除重复项...\n")
+  tumor_data <- tumor_data[!duplicated(tumor_data$sample_id), ]
+}
+
+expr_data <- tumor_data[, 5:ncol(tumor_data)]
+rownames(expr_data) <- tumor_data$sample_id
+tpm <- as.matrix(expr_data)
+log2_tpm <- tpm
+log2_tpm_t <- t(log2_tpm)
+
+library(limma)
+batch_vector <- ifelse(tumor_data$sample_type == "GTEx_normal", 1, 0)
+bio_group <- ifelse(tumor_data$sample_type == "TCGA_tumor", "Tumor", "Normal")
+bio_group <- factor(bio_group, levels = c("Normal", "Tumor"))
+mod <- model.matrix(~ bio_group)
+tpm_corrected <- removeBatchEffect(log2_tpm_t, batch = batch_vector, design = mod)
+
+dat <- tpm_corrected
+Param <- gsvaParam(
+  expr = dat,
+  geneSets = geneSet_npfr,
+  kcdf = "Gaussian",
+  minSize = 2,
+  maxSize = 500
+)
+
+gsva_mat <- gsva(Param)
+ssgsea_result <- as.data.frame(t(gsva_mat))
+
+
+write.csv(ssgsea_result, file = "removebatch_tpm_tcga_gtex_ssgsea_result.csv", row.names = TRUE)
+
+ssgsea_result$sample_id <- rownames(ssgsea_result)
+sample_info <- tumor_data %>% dplyr::select(sample_id, project, sample_type)
+ssgsea_result <- merge(ssgsea_result, sample_info, by = "sample_id")
+write.csv(ssgsea_result, output_file, row.names = FALSE)
+cat("ssGSEA 结果已保存至:", output_file, "\n")
+```
+
+## 3. Boxplot of ssgsea result
+```{r}
+ressig <- readRDS("../rds/ssgsea_tcga_mrna_clin_result.rds")
+exclude_cancer_types <- c("ACC", "DLBC", "GBM", "LAML", "LGG", "MESO","OV", "TGCT", "UCS", "UVM")
+ressig <- ressig %>%  filter(!project %in% exclude_cancer_types)
+```
+
+```{r fig.height= 5, fig.width= 10}
+ressig_ordered <- ressig %>%
+  group_by(project) %>%
+  summarize(mean_score = mean(necroptosis_pyroptosis_ferroptosis_related, na.rm = TRUE)) %>%
+  arrange(mean_score)
+
+ressig$project <- factor(ressig$project, levels = ressig_ordered$project)
+
+plot <- ggplot(ressig, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_related, fill = project)) +
+  geom_boxplot() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = "black"), 
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(color = "black"), 
+        axis.title.y = element_text(color = "black"),
+        legend.position = "none",  
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        panel.background = element_blank(),  # 背景为白色
+        plot.background = element_blank(),  # 整体背景为白色
+        panel.grid = element_blank(),       # 去掉网格线
+        axis.line = element_line(color = "black")) +  # 添加横纵坐标轴线
+  labs(title = "NPF Score Across Cancer Types",
+       x = "",
+       y = "NPF Score")
+
+ggsave("../remove_GBM_fig1_2/analysis/NPF_Score_Across_Cancer_Types.pdf", plot = plot, width = 10, height = 5)
+```
+
+## 4. Difference between normal and tumor ssgsea score 
+
+```{r fig.width=10}
+library(ggplot2)
+library(dplyr)
+library(ggpubr)
+
+all_res <- readRDS("../rds/removebatch_ssgsea_tcga_gtex_mrna_clin.rds")
+
+all_res$group <- ifelse(all_res$sample_type %in% c("GTEx_normal", "TCGA_normal"), "Normal", "Tumor")
+
+selected_projects <- c("CESC","KIRC","KIRP","PAAD")
+
+filtered_data <- all_res %>% filter(project %in% selected_projects)
+
+filtered_data$project <- factor(filtered_data$project, levels = selected_projects)
+
+p <- ggplot(filtered_data, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_related, fill = group)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.75)) +
+  labs(x = "", y = "NPF Score") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Normal" = "skyblue", "Tumor" = "orange"), name = "Group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = "black"), 
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(color = "black"), 
+        axis.title.y = element_text(color = "black"),
+    legend.position = "top",                  
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    strip.text = element_blank(),            
+    panel.background = element_blank(),     
+    panel.grid = element_blank(),            
+    axis.line = element_line(color = "black") 
+  ) +
+  stat_compare_means(aes(group = group), method = "wilcox.test", label = "p.signif", size = 3)
+
+
+ggsave(filename = "../remove_GBM_fig1_2/analysis/Normal_vs_tumor_main_boxplot.pdf", 
+       plot = p, 
+       width = 8, 
+       height = 4)
+```
+
+```{r}
+all_res <- read.csv("../rds/removebatch_ssgsea_tcga_gtex_mrna_clin.csv")
+
+all_res$group <- ifelse(all_res$sample_type %in% c("GTEx_normal", "TCGA_normal"), "Normal", "Tumor")
+
+selected_projects <- c("COAD","STAD", "HNSC","CHOL","READ")
+
+filtered_data <- all_res %>% filter(project %in% selected_projects)
+
+filtered_data$project <- factor(filtered_data$project, levels = selected_projects)
+
+p <- ggplot(filtered_data, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_related, fill = group)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.75)) +
+  labs(x = "", y = "NPF Score") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Normal" = "skyblue", "Tumor" = "orange"), name = "Group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = "black"), 
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(color = "black"), 
+        axis.title.y = element_text(color = "black"),
+    legend.position = "top",                  
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    strip.text = element_blank(),            
+    panel.background = element_blank(),     
+    panel.grid = element_blank(),            
+    axis.line = element_line(color = "black") 
+  ) +
+  stat_compare_means(aes(group = group), method = "wilcox.test", label = "p.signif", size = 3)
+
+
+ggsave(filename = "../remove_GBM_fig1_2/analysis/Normal_vs_tumor_supp1_boxplot.pdf", 
+       plot = p, 
+       width = 10, 
+       height = 4)
+
+```
+
+
+```{r fig.width=10}
+all_res <- read.csv("../rds/removebatch_ssgsea_tcga_gtex_mrna_clin.csv")
+
+all_res$group <- ifelse(all_res$sample_type %in% c("GTEx_normal", "TCGA_normal"), "Normal", "Tumor")
+
+selected_projects <- c("BRCA","LUAD",  "PRAD", "SKCM", "THCA", "LUSC","LIHC", "PCPG", "THYM",  "UCEC")
+
+filtered_data <- all_res %>% filter(project %in% selected_projects)
+
+filtered_data$project <- factor(filtered_data$project, levels = selected_projects)
+
+p <- ggplot(filtered_data, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_related, fill = group)) +
+  geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.75)) +
+  labs(x = "", y = "NPF Score") +
+  theme_minimal() +
+  scale_fill_manual(values = c("Normal" = "skyblue", "Tumor" = "orange"), name = "Group") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, color = "black"), 
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(color = "black"), 
+        axis.title.y = element_text(color = "black"),
+    legend.position = "top",                  
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    strip.text = element_blank(),            
+    panel.background = element_blank(),     
+    panel.grid = element_blank(),            
+    axis.line = element_line(color = "black") 
+  ) +
+  stat_compare_means(aes(group = group), method = "wilcox.test", label = "p.signif", size = 3)
+
+
+ggsave(filename = "../remove_GBM_fig1_2/analysis/Normal_vs_tumor_supp2_boxplot.pdf", 
+       plot = p, 
+       width = 10, 
+       height = 4)
+```
+
+
+
+
