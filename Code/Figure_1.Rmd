@@ -82,9 +82,9 @@ run_deg_analysis <- function(data, project_name, output_dir) {
     output_file <- file.path(output_dir, paste0("deg_sig_", project_name, ".csv"))
     write.csv(resSig, output_file, row.names = TRUE)
     
-    message("结果已保存至: ", output_file)
+    message("The result has been saved to:", output_file)
   } else {
-    message("项目", project_name, "的样本只有一个组别或组内样本数不足，跳过分析")
+    message("Project", project_name, "is skipped")
   }
 
   rm(project_data, exp, Group, deg.count, dds1, res1, resOrdered1, resSig)
@@ -198,15 +198,13 @@ combined_data <- combined_data %>% dplyr::select(Gene, Pathway, everything())
 
 ```{r}
 plot_heatmap <- function(data, pathway_name) {
-  # 不再根据 Group 分组，直接使用所有数据
   matrix_data <- as.matrix(data[, !(names(data) %in% c("Pathway", "Gene"))])
   rownames(matrix_data) <- data$Gene
   
-  # 设置颜色和分界值，更加细致的分区以展示颜色变化
+  # Set the color and boundary value
   breaks <- seq(-3, 3, length.out = 100)
   colors <- colorRampPalette(c("#08306b", "#c6dbef", "white", "#fee0d2", "#a50f15"))(length(breaks) - 1)
   
-  # 使用 pheatmap 绘制热图
   heatmap_plot <- pheatmap(
     matrix_data,
     color = colors,
@@ -242,15 +240,13 @@ for (pathway in unique(combined_data$Pathway)) {
 
 ```{r}
 plot_heatmap <- function(data, pathway_name) {
-  # 不再根据 Group 分组，直接使用所有数据
   matrix_data <- as.matrix(data[, !(names(data) %in% c("Pathway", "Gene"))])
   rownames(matrix_data) <- data$Gene
   
-  # 设置颜色和分界值，更加细致的分区以展示颜色变化
+  # Set the color and boundary value
   breaks <- seq(-3, 3, length.out = 100)
   colors <- colorRampPalette(c("#08306b", "#c6dbef", "white", "#fee0d2", "#a50f15"))(length(breaks) - 1)
   
-  # 使用 pheatmap 绘制热图
   heatmap_plot <- pheatmap(
     matrix_data,
     color = colors,
