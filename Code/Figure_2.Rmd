@@ -51,11 +51,11 @@ tcga_mrna_clin <- tcga_mrna_clin %>%
 perform_cox_analysis <- function(data, gene_list, time_var, status_var) {
   tumor_data <- data %>%
     filter(ifelse(as.numeric(str_sub(sample_id, 14, 15)) < 10, TRUE, FALSE)) %>%
-    filter(!is.na(!!sym(time_var)) & !is.na(!!sym(status_var)))  # 确保生存数据完整
+    filter(!is.na(!!sym(time_var)) & !is.na(!!sym(status_var)))  # Ensure the completeness of survival data
 
   selected_data <- tumor_data[, c(time_var, status_var, gene_list), drop = FALSE]
   for (gene in gene_list) {
-    selected_data[[gene]] <- round(2^selected_data[[gene]] - 0.001, 2)  # 转换公式
+    selected_data[[gene]] <- round(2^selected_data[[gene]] - 0.001, 2)
   }
   cox_results <- list()
   for (gene in gene_list) {
@@ -79,7 +79,7 @@ perform_cox_by_project <- function(data, gene_list, time_var, status_var) {
   projects <- unique(data$project)
     all_results <- list()
   for (project in projects) {
-    # 提取当前项目的数据
+    # Extract the data of the current project
     project_data <- data %>% filter(project == !!project)
     project_cox_results <- perform_cox_analysis(project_data, gene_list, time_var, status_var)
     project_cox_results$project <- project
@@ -186,7 +186,7 @@ output_file = "removebatch_ssgsea_tcga_gtex_mrna_clin.csv"
 geneSet_npfr <- getGmt(gmt_file)
 tumor_data <- expr_data
 if (any(duplicated(tumor_data$sample_id))) {
-  cat("发现重复的 sample_id，移除重复项...\n")
+  cat("Discover duplicate sample ids and remove the duplicates...\n")
   tumor_data <- tumor_data[!duplicated(tumor_data$sample_id), ]
 }
 
@@ -222,7 +222,7 @@ ssgsea_result$sample_id <- rownames(ssgsea_result)
 sample_info <- tumor_data %>% dplyr::select(sample_id, project, sample_type)
 ssgsea_result <- merge(ssgsea_result, sample_info, by = "sample_id")
 write.csv(ssgsea_result, output_file, row.names = FALSE)
-cat("ssGSEA 结果已保存至:", output_file, "\n")
+cat("ssGSEA is saved to:", output_file, "\n")
 ```
 
 ## 3. Boxplot of ssgsea result
@@ -249,10 +249,10 @@ plot <- ggplot(ressig, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_r
         axis.title.y = element_text(color = "black"),
         legend.position = "none",  
         plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-        panel.background = element_blank(),  # 背景为白色
-        plot.background = element_blank(),  # 整体背景为白色
-        panel.grid = element_blank(),       # 去掉网格线
-        axis.line = element_line(color = "black")) +  # 添加横纵坐标轴线
+        panel.background = element_blank(),  
+        plot.background = element_blank(),  
+        panel.grid = element_blank(),       
+        axis.line = element_line(color = "black")) +  
   labs(title = "NPF Score Across Cancer Types",
        x = "",
        y = "NPF Score")
