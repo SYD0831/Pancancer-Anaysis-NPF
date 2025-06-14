@@ -258,6 +258,7 @@ plot <- ggplot(ressig, aes(x = project, y = necroptosis_pyroptosis_ferroptosis_r
        y = "NPF Score")
 
 ggsave("../remove_GBM_fig1_2/analysis/NPF_Score_Across_Cancer_Types.pdf", plot = plot, width = 10, height = 5)
+
 ```
 
 ## 4. Difference between normal and tumor ssgsea score 
